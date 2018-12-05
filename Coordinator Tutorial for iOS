@@ -1,0 +1,468 @@
+Coordinator Tutorial for iOS: Getting Started
+In this Coordinator tutorial you’ll convert an iOS app from using the MVC pattern to the Coordinator pattern and examine the pros and cons of Coordinators.
+
+Andrew Kharchyshyn
+Feb 19 2018 · Intermediate · Article · 25 mins
+
+The Model-View-Controller (“MVC”) design pattern is useful, but it doesn’t scale well. As projects grow in size and complexity, this limitation becomes more apparent. In this Coordinator tutorial, you’ll try a different approach: Coordinators.
+If you’re unfamiliar with the term, don’t worry! It’s a simple architecture that doesn’t require any third party frameworks, and it’s easy to adopt in your existing MVC projects.
+By the end of this Coordinator tutorial, you’ll be able to decide which approach works best for you when building your apps.
+Note: If you’re not familiar with MVC, check out Design Patterns in iOS.
+Getting Started
+To kick things off, start by downloading the materials for this tutorial (you can find a link at the top or bottom of this tutorial).
+Note: The kanji data used in this Coordinator tutorial was provided by Kanji Alive Public API
+Kanji List is an app for learning Kanji (Chinese characters used in the Japanese language), and it’s currently using the MVC design pattern.
+Let’s take a closer look at the functionality this app provides and how:
+KanjiListViewController.swift contains a list of the kanji.
+KanjiDetailViewController.swift contains information specific to the selected kanji, as well as the list of words that use that kanji.
+When a user selects a word from the list, the application pushes KanjiListViewController.swift and shows the list of kanji for that word.
+Coordinator Tutorial application
+
+There’s also Kanji.swift, which holds the data models; and KanjiStorage.swift, which is a shared instance. It’s used to store parsed kanji data.
+Pretty straightforward, huh?
+Current Implementation Problems
+At this point, you may be thinking, “The app works. What’s the problem?”
+
+
+That’s a great question! Let’s take a look.
+Open Main.storyboard.
+
+
+OK, this looks fishy. The app has a segue from KanjiListViewController to KanjiDetailViewController; and also from KanjiDetailViewController to KanjiListViewController.
+The reason is because of the app’s business logic:
+First you push KanjiDetailViewController.swift.
+Then you push KanjiListViewController.swift.
+If you think the problem is in the segues, you’re partially right.
+Segues bind two UIViewControllers together, making those UIViewControllers very difficult to reuse.
+Reusability Problems
+Open KanjiListViewController.swift. Notice it has a property named kanjiList:
+var kanjiList: [Kanji] = KanjiStorage.sharedStorage.allKanji() {
+  didSet {
+    kanjiListTableView?.reloadData()
+  }
+}
+
+kanjiList is a datasource for KanjiListViewController, and its default is to display all of the kanji from the shared KanjiStorage.
+There’s also a property named word. This property is a hack that allows you to reuse KanjiListViewController for both the first and third screens:
+var word: String? {
+  didSet {
+    guard let word = word else {
+      return
+    }
+    kanjiList = KanjiStorage.sharedStorage.kanjiForWord(word)
+    title = word
+  }
+}
+
+By setting word, you change both kanjiList and the title that’s displayed in the UINavigationBar:
+
+
+Consider for a moment. KanjiListViewController knows the following things:
+There might be a word selected.
+The word has kanji.
+If there is no word selected, then the app should show all of the kanji in kanjiList.
+KanjiListViewController knows that it’s in a UINavigationController, and that it should change the title if a word is selected.
+
+
+That seems pretty complicated for something as simple as a UIViewController displaying a list of items.
+One way to fix this unnecessary complexity is to pass the list of kanji to the KanjiListViewController; but who should pass it?
+You can create a UINavigationController subclass and inject the data into its child, but does this code belong in the UINavigationController‘s subclass? Shouldn’t UINavigationController be a simple container for UIViewControllers?
+Another problematic place is prepare(for:sender:), which is located in KanjiDetailViewController.swift:
+override func prepare(for segue: UIStoryboardSegue, sender: Any?) {
+  super.prepare(for: segue, sender: sender)
+
+  guard let listViewController = segue.destination as? KanjiListViewController else {
+    return
+  }
+
+  listViewController.shouldOpenDetailsOnCellSelection = false
+  listViewController.word = sender as? String
+}
+
+This code means that KanjiDetailViewController knows about the next UIViewController, which in this case is KanjiListViewController.
+If you were to reuse KanjiDetailViewController, the code would quickly get out of hand, because this method would need to grow into a giant switch statement so it knew which view controller to push next. This is why the logic shouldn’t be inside of another view controller — it creates a strong connection between view controllers, making them have more responsibility than they should.
+Coordinator Pattern
+The Coordinator pattern is a potential solution to all of the problems mentioned above. This pattern was first introduced to the iOS community by Soroush Khanlou (@khanlou) in his blog and during his presentation at the NSSpain conference.
+The idea of the Coordinator pattern is to create a separate entity — a Coordinator — which is responsible for the application’s flow. The Coordinator encapsulates a part of the application. The Coordinator knows nothing of its parent Coordinator, but it can start its child Coordinators.
+Coordinators create, present and dismiss UIViewControllers while keeping the UIViewControllers separate and independent. Similar to how UIViewControllers manage UIViews, Coordinators manage UIViewControllers.
+Coordinator Protocol
+It’s time to dive into some coding!
+First, create a Coordinator protocol. From the main menu, click File\New\File…. Then, select the iOS\Source\Swift File and name the new file Coordinator.swift. When you’re done, click Next and then Create.
+Now, replace its contents with the following:
+protocol Coordinator {
+  func start()
+}
+
+Believe it or not, that’s it! All the Coordinator protocol needs is one start() function!
+
+
+Apply the Coordinator Pattern
+Because you want the Coordinator to handle the application’s flow, you need to provide a way, within the code, to create UIViewControllers. For this Coordinator tutorial, you’ll use .xib files instead of storyboards. With these files, you’ll be able to create UIViewControllers by calling the following:
+UIViewController(nibName nibNameOrNil: String?, bundle nibBundleOrNil: Bundle?)
+
+Note: The Coordinator pattern doesn’t require that you use .xib files. You can create UIViewControllers in code, and you can also instantiate them from storyboards, which you’ll see at the end of the Coordinator tutorial.
+Add these .xib files to the project target by dragging and dropping them into the Project navigator in Xcode. Open KanjiDetailViewController.xib and KanjiDetailViewController.swift in the Assistant editor and make sure that all of the outlet connections are properly set. Do the same for KanjiListViewController.xib and KanjiListViewController.swift.
+Note: In the File inspector, make sure that both .xib files are added to the target.
+Adding target membership to a file in Xcode
+
+You need to replace Main.storyboard as the application starting point.
+Right-click Main.storyboard, choose Delete then click Move to Trash.
+Click on the KanjiList project in the File navigator and open the KanjiList target > General, and delete Main as the Main interface:
+Removing main interface from project
+
+Now you need to create your own starting point.
+Application Coordinator
+It’s time to create the application coordinator. Click File\New\File… and select the iOS\Source\Swift file. Name the file ApplicationCoordinator.swift. Click Next, and then Create.
+Replace its contents with the following:
+import UIKit
+
+class ApplicationCoordinator: Coordinator {
+  let kanjiStorage: KanjiStorage //  1
+  let window: UIWindow  // 2
+  let rootViewController: UINavigationController  // 3
+  
+  init(window: UIWindow) { //4
+    self.window = window
+    kanjiStorage = KanjiStorage()
+    rootViewController = UINavigationController()
+    rootViewController.navigationBar.prefersLargeTitles = true
+    
+    // Code below is for testing purposes   // 5
+    let emptyViewController = UIViewController()
+    emptyViewController.view.backgroundColor = .cyan
+    rootViewController.pushViewController(emptyViewController, animated: false)
+  }
+  
+  func start() {  // 6
+    window.rootViewController = rootViewController
+    window.makeKeyAndVisible()
+  }
+}
+
+Let’s take a closer look at the code:
+ApplicationCoordinator will have kanjiStorage with data from JSON. Right now kanjiStorage is used as a shared instance, but you’ll use dependency injection instead.
+ApplicationCoordinator sets up its presentations in the app’s window, which will be passed to ApplicationCoordinator in its initializer.
+rootViewController is a UINavigationController.
+Initialize the properties.
+Since there’s no child Coordinator to present, this code will allow you to test if the presentation is set up correctly.
+start() is where things kick off. Specifically, the window is presented with its rootViewController.
+All you need to do now is to call start() to create the ApplicationCoordinator.
+Open AppDelegate.swift and replace its contents with this:
+import UIKit
+
+@UIApplicationMain
+class AppDelegate: UIResponder, UIApplicationDelegate {
+  var window: UIWindow?
+  private var applicationCoordinator: ApplicationCoordinator?  // 1
+  
+  func application(_ application: UIApplication,
+                   didFinishLaunchingWithOptions launchOptions:
+                     [UIApplicationLaunchOptionsKey: Any]?) -> Bool {
+    
+    let window = UIWindow(frame: UIScreen.main.bounds)
+    let applicationCoordinator = ApplicationCoordinator(window: window) // 2
+    
+    self.window = window
+    self.applicationCoordinator = applicationCoordinator
+    
+    applicationCoordinator.start()  // 3
+    return true
+  }
+}
+
+Here’s what’s happening:
+Keep a reference to applicationCoordinator.
+Initialize applicationCoordinator with the window that you just created.
+Start applicationCoordinator‘s main presentation.
+Build and run the app. Now you should see the following screen:
+Presenting an empty view controller with the Coordinator pattern
+
+Kanji List Coordinator
+Now it’s time to present the KanjiListViewController. For this you’ll create another Coordinator. The main tasks of this Coordinator are to present a list of kanji and, later, to start another Coordinator responsible for displaying KanjiDetailViewController.
+Similar to before, create a new file AllKanjiListCoordinator.swift.
+Replace its contents with the following code:
+import UIKit
+
+class AllKanjiListCoordinator: Coordinator {
+  private let presenter: UINavigationController  // 1
+  private let allKanjiList: [Kanji]  // 2
+  private var kanjiListViewController: KanjiListViewController? // 3
+  private let kanjiStorage: KanjiStorage // 4
+
+  init(presenter: UINavigationController, kanjiStorage: KanjiStorage) {
+    self.presenter = presenter
+    self.kanjiStorage = kanjiStorage
+    allKanjiList = kanjiStorage.allKanji()  // 5
+  }
+
+  func start() {
+    let kanjiListViewController = KanjiListViewController(nibName: nil, bundle: nil) // 6
+    kanjiListViewController.title = "Kanji list"
+    kanjiListViewController.kanjiList = allKanjiList
+    presenter.pushViewController(kanjiListViewController, animated: true)  // 7
+
+    self.kanjiListViewController = kanjiListViewController
+  }
+}
+
+Here’s the breakdown:
+The presenter of AllKanjiListCoordinator is a UINavigationController.
+Since AllKanjiListCoordinator presents a list of all kanji, it needs a property to access the list.
+Property to keep a reference to the KanjiListViewController that you’ll be presenting.
+Property to store KanjiStorage, which is passed to AllKanjiListCoordinator‘s initializer.
+Initialize properties.
+Create the UIViewController that you want to present.
+Push the newly created UIViewController to the presenter.
+Now you need to create and start AllKanjiListCoordinator. To do that, open ApplicationCoordinator.swift and add this property to the top of the file, right below where you declared the rootViewController:
+let allKanjiListCoordinator: AllKanjiListCoordinator
+
+Now, in init(window:), replace all of the code below // Code below is for testing purposes // 5 with this:
+allKanjiListCoordinator = AllKanjiListCoordinator(presenter: rootViewController,
+                                                  kanjiStorage: kanjiStorage)
+
+Lastly, in start(), below this line:
+window.rootViewController = rootViewController
+
+add this:
+allKanjiListCoordinator.start()
+
+Build and run. Now it looks the same as it did before the refactor!
+Coordinator tutorial Kanji list application
+
+However, if you select a kanji, it will crash. This is because when a cell is selected in KanjiListViewController, a segue is performed, but that segue doesn’t exist.
+You need to fix this! Instead of directly performing an action when the cell is selected, you’ll trigger a delegate callback. This removes the action logic from the UIViewController.
+Open KanjiListViewController.swift and add this above the class declaration:
+protocol KanjiListViewControllerDelegate: class {
+  func kanjiListViewControllerDidSelectKanji(_ selectedKanji: Kanji)
+}
+
+Now, in KanjiListViewController, add a new property:
+weak var delegate: KanjiListViewControllerDelegate?
+
+Lastly, replace tableView(_:didSelectRowAt:) with this:
+func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+  let kanji = kanjiList[indexPath.row]
+  delegate?.kanjiListViewControllerDidSelectKanji(kanji)
+  tableView.deselectRow(at: indexPath, animated: true)
+}
+
+Great! You just made KanjiListViewController simpler. It now has the single responsibility of displaying the list of kanji and notifying the delegate when someone selects an item. Nobody is listening yet, though.
+Open AllKanjiListCoordinator.swift and add this to the end of the file, outside of AllKanjiListCoordinator:
+// MARK: - KanjiListViewControllerDelegate
+extension AllKanjiListCoordinator: KanjiListViewControllerDelegate {
+  func kanjiListViewControllerDidSelectKanji(_ selectedKanji: Kanji) {
+
+  }
+}
+
+This sets up AllKanjiListCoordinator so that it conforms to KanjiListViewControllerDelegate. Later you’ll add code inside kanjiListViewControllerDidSelectKanji(_:) that calls start() in DetailsCoordinator.
+Lastly, add this code inside of start(), right below where you instantiate kanjiListViewController:
+kanjiListViewController.delegate = self
+
+Now build and run your app! Although it runs, the code inside kanjiListViewControllerDidSelectKanji is still empty, so nothing happens when you select a cell. Don’t worry; you’ll add this code shortly.
+When to Create a Coordinator?
+At this point, you might be wondering, “When do I need to create a separate coordinator?” There is no strict answer to this question. Coordinators are useful for a specific part of the application that might be presented from different places.
+For displaying kanji details, you could create a new kanji details UIViewController inside of AllKanjiListCoordinator, and push it when the delegate callback is called. One good question to ask yourself is, “Should AllKanjiListCoordinator know about details related UIViewControllers?” The name suggests that it shouldn’t. Also, by creating a separate Coordinator for details, you’ll end up with an independent component that can display details for a kanji, without any additional dependencies on the app. This is powerful!
+Suppose one day you want integrate Spotlight search. If you’ve put detail display into a separate Coordinator, it becomes simple to do: create a new DetailsCoordinator and call start().
+The key takeaway is that Coordinators help create independent components that, together, build the app.
+Kanji Detail Coordinator
+Now let’s create the KanjiDetailCoordinator.
+Similar to before, add a new file named KanjiDetailCoordinator.swift and replace the contents with the following code:
+import UIKit
+
+class KanjiDetailCoordinator: Coordinator {
+  private let presenter: UINavigationController  // 1
+  private var kanjiDetailViewController: KanjiDetailViewController? // 2
+  private var wordKanjiListViewController: KanjiListViewController? // 3
+  private let kanjiStorage: KanjiStorage  // 4
+  private let kanji: Kanji  // 5
+
+  init(presenter: UINavigationController, // 6
+       kanji: Kanji,
+       kanjiStorage: KanjiStorage) {
+
+    self.kanji = kanji
+    self.presenter = presenter
+    self.kanjiStorage = kanjiStorage
+  }
+
+  func start() {
+    let kanjiDetailViewController = KanjiDetailViewController(nibName: nil, bundle: nil) // 7
+    kanjiDetailViewController.title = "Kanji details"
+    kanjiDetailViewController.selectedKanji = kanji    
+
+    presenter.pushViewController(kanjiDetailViewController, animated: true) // 8
+    self.kanjiDetailViewController = kanjiDetailViewController  
+  }
+}
+
+There’s a lot going on here, so let’s break it down:
+KanjiDetailCoordinator‘s presenter is a UINavigationController.
+Reference to KanjiDetailViewController, which you’re presenting in start().
+Reference to KanjiListViewController, which you’ll present when a user selects a word.
+Property to store KanjiStorage, which is passed to KanjiDetailViewController‘s initializer.
+Property to store the selected kanji.
+Initialize properties.
+Create the UIViewController that you want to present.
+Present the UIViewController that you just created.
+Now let’s create KanjiDetailCoordinator. Open AllKanjiListCoordinator.swift and add a new property below the kanjiStorage declaration:
+private var kanjiDetailCoordinator: KanjiDetailCoordinator?
+
+Next, replace the empty body of kanjiListViewControllerDidSelectKanji(_:) in the extension with this:
+let kanjiDetailCoordinator = KanjiDetailCoordinator(presenter: presenter, 
+                                                    kanji: selectedKanji, 
+                                                    kanjiStorage: kanjiStorage)
+kanjiDetailCoordinator.start()
+
+self.kanjiDetailCoordinator = kanjiDetailCoordinator
+
+With this function, you create and start KanjiDetailCoordinator when a user selects a kanji.
+Build and run.
+Coordinator tutorial Kanji list application details screen
+
+As you can see, you now have KanjiDetailViewController presented correctly when a user selects a cell on KanjiListViewController. However, if you select a word from the list on KanjiDetailViewController, your app will crash because, like before, you’re triggering a segue that no longer exists.
+Time to fix this!
+Open KanjiDetailViewController.swift. Just like with KanjiListViewController, add the delegate protocol above the class declaration:
+protocol KanjiDetailViewControllerDelegate: class {
+  func kanjiDetailViewControllerDidSelectWord(_ word: String)
+}
+
+Then, add the following property inside KanjiDetailViewController:
+weak var delegate: KanjiDetailViewControllerDelegate?
+
+To trigger the delegate, replace tableView(_:didSelectRowAt:) with this:
+func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+  defer {
+    tableView.deselectRow(at: indexPath, animated: true)
+  }
+
+  guard indexPath.section == 1,
+    let word = selectedKanji?.examples[indexPath.row].word else {
+      return
+  }
+  delegate?.kanjiDetailViewControllerDidSelectWord(word)
+}
+
+Excellent! Now the app won’t crash when you select a cell, but it still won’t open a list.
+To fix this, open KanjiDetailCoordinator.swift, and add the following code at the bottom of the file — outside of KanjiDetailCoordinator — which confirms the delegate:
+// MARK: - KanjiDetailViewControllerDelegate
+extension KanjiDetailCoordinator: KanjiDetailViewControllerDelegate {
+  func kanjiDetailViewControllerDidSelectWord(_ word: String) {
+    let wordKanjiListViewController = KanjiListViewController(nibName: nil, bundle: nil)
+    let kanjiForWord = kanjiStorage.kanjiForWord(word)
+    wordKanjiListViewController.kanjiList = kanjiForWord
+    wordKanjiListViewController.title = word
+
+    presenter.pushViewController(wordKanjiListViewController, animated: true)
+  }
+}
+
+Inside of start(), add this below where you instantiated KanjiDetailViewController:
+kanjiDetailViewController.delegate = self
+
+Build and run the project. The app should work the same way as it did before the refactoring.
+Coordinator tutorial application word screen
+
+Project Clean Up
+There are still a few things you can change to make this even better.
+First of all, in KanjiListViewController.swift and KanjiDetailViewController.swift remove the prepare(for:sender:) method. You remove this code, because it will never get triggered with this architecture.
+Still in KanjiListViewController.swift, remove this variable:
+var word: String? {
+  didSet {
+    guard let word = word else {
+      return
+    }
+    kanjiList = KanjiStorage.sharedStorage.kanjiForWord(word)
+    title = word
+  }
+}
+
+This variable is also no longer used.
+Now take a look at var shouldOpenDetailsOnCellSelection = true in KanjiListViewController.swift. This flag was used to specify whether or not the UIViewController will push KanjiDetailViewController. Since this logic is now not in the KanjiListViewController you need to make a small change.
+Replace this:
+var shouldOpenDetailsOnCellSelection = true
+
+With this:
+var cellAccessoryType = UITableViewCellAccessoryType.disclosureIndicator
+
+And in tableView(_:cellForRowAt:) change this:
+cell.accessoryType = shouldOpenDetailsOnCellSelection ? .disclosureIndicator : .none
+
+To this:
+cell.accessoryType = cellAccessoryType
+
+This property allows you to set the specific accessory type for cells. The problem is now that when a word is selected, you display the kanji list with a disclosure indicator.
+Disclosure indicator inside a table view
+
+To fix that, open KanjiDetailCoordinator.swift and look for kanjiDetailViewControllerDidSelectWord(_:). After you instantiate wordKanjiListViewController, set its cell accessory type like this:
+wordKanjiListViewController.cellAccessoryType = .none
+
+wordKanjiListViewController‘s cellAccessoryType is set to .none, because the logic for setting this property is handled in KanjiDetailCoordinator. This saves wordKanjiListViewController from knowing too much about the application.
+Now for the last improvement. Open KanjiStorage.swift and delete this static variable:
+static let sharedStorage = KanjiStorage()
+
+Deleting this static variable is not enough; it’s still in use in KanjiListViewController.swift, where you set it as the default value for kanjiList. Instead of giving kanjiList a default value of the entire KanjiStorage, display an empty list.
+Change this line:
+var kanjiList: [Kanji] = KanjiStorage.sharedStorage.allKanji()
+
+To this:
+var kanjiList: [Kanji] = []
+
+Now you have a working app, with arguably cleaner and more flexible architecture, as well as no shared instances.
+
+
+You can download the final project using the link at the top or bottom of this tutorial.
+The Coordinator pattern might seem like an over-complication — and for a small project, it might be — but as soon as the application begins to grow, this pattern keeps the project straightforward and UIViewControllers independent. Coordinators are great, as they provide you with a clean architecture while requiring a relatively small number of changes to integrate with existing projects.
+Extras: Coordinator Pattern with Storyboards
+If you like storyboards, you can create a new file named Extensions.swift file and replace it with the following contents:
+import UIKit
+
+protocol StoryboardInstantiable: NSObjectProtocol {
+  associatedtype MyType  // 1
+  static var defaultFileName: String { get }  // 2
+  static func instantiateViewController(_ bundle: Bundle?) -> MyType // 3
+}
+
+extension StoryboardInstantiable where Self: UIViewController {
+  static var defaultFileName: String {
+    return NSStringFromClass(Self.self).components(separatedBy: ".").last!
+  }
+
+  static func instantiateViewController(_ bundle: Bundle? = nil) -> Self {
+    let fileName = defaultFileName
+    let sb = UIStoryboard(name: fileName, bundle: bundle)
+    return sb.instantiateInitialViewController() as! Self
+  }
+}
+
+Here’s what’s going on:
+You create an associated type to use inside of the protocol.
+Returns the filename, which is the name of a class without the module name.
+This is the main function; it searches for the Storyboard with the same name as defaultFileName, instantiates the first UIViewController from the Storyboard and returns it.
+In the code above, you also created the StoryboardInstantiable extension for UIViewController. With it, you can just conform any UIViewController to StoryboardInstantiable, and you will be able to instantiate it.
+To instantiate the UIViewController, add this code to the bottom of the UIViewController‘s file:
+extension MyViewController: StoryboardInstantiable {
+}
+
+Inside the UIViewController, add the following:
+let viewController = MyViewController.instantiateViewController()
+
+For example, if you wanted to use this code with KanjiDetailViewController, it would look like the following:
+extension KanjiDetailViewController: StoryboardInstantiable {
+}
+
+class KanjiDetailsCoordinator: Coordinator {
+   let viewController = KanjiDetailViewController.instantiateViewController()
+   
+}
+
+With great power comes great responsibility (and limitations). To use this extension, you need to create a separate storyboard for each UIViewController. The name of the storyboard must match the name of the UIViewController‘s class. This UIViewController must be set as the initial UIViewController for this storyboard.
+As a homework exercise, feel free to switch from .xib files to this approach, and please share your thoughts in the comments section below.
+Where To Go From Here?
+This concludes the Coordinator tutorial. One of the best advantages the Coordinator architectural pattern provides is the ability to easily change the application flow (show login screen, show tutorial screen, etc.) As an exercise in testing this, play around with the project and try creating and presenting a login screen instead of a list.
+If you want to learn more about the Coordinator pattern, check out the videos below. They have some great explanations:
+Coordinators presentation at NSSpain by Soroush Khanlou
+Boundaries in Practice by Ayaka Nonaka at try! Swift
+MVVM with Coordinators & RxSwift – Łukasz Mróz
+The coordinator pattern is one of many useful design patterns you can use in iOS development. To learn more about other patterns, check out our video series on iOS design patterns. Also check out the video tutorials on our site for in-depth explanations on other iOS topics.
+As always, if you have any questions, feel free to ask in the comment section below. :]
